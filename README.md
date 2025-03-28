@@ -48,6 +48,7 @@ mkdir build && cd build
 cmake .. && make -j$(nproc)
 cd ../ && sh tool/build_trt_engine.sh
 cd build && ./pointpillar ../data/ ../data/ --timer
+./pointpillar ../data/test/ ../data/test/ --timer
 ```
 
 ## FP16 Performance && Metrics
