@@ -36,6 +36,7 @@ class Engine {
  public:
   virtual bool forward(const std::vector<const void *> &bindings, void *stream = nullptr, void *input_consum_event = nullptr) = 0;
   virtual int index(const std::string &name) = 0;
+  virtual std::string name(int ibinding) = 0;
   virtual std::vector<int> run_dims(const std::string &name) = 0;
   virtual std::vector<int> run_dims(int ibinding) = 0;
   virtual std::vector<int> static_dims(const std::string &name) = 0;

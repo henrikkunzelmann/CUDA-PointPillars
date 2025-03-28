@@ -32,6 +32,8 @@ set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS}
     -gencode arch=compute_$ENV{CUDASM},code=compute_$ENV{CUDASM}
 )
 
+set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -std=c++14")  
+
 include_directories(
     $ENV{CUDA_Inc}
     $ENV{TensorRT_Inc}

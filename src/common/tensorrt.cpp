@@ -119,7 +119,7 @@ class __native_engine_context {
       return false;
     }
 
-    engine_ = std::shared_ptr<nvinfer1::ICudaEngine>(runtime_->deserializeCudaEngine(pdata, size, nullptr),
+    engine_ = std::shared_ptr<nvinfer1::ICudaEngine>(runtime_->deserializeCudaEngine(pdata, size),
                                                      destroy_pointer<nvinfer1::ICudaEngine>);
     if (engine_ == nullptr) {
       printf("Failed to deserialize engine: %s\n", message_name);
@@ -176,11 +176,11 @@ class EngineImplement : public Engine {
 
   void setup() {
     auto engine = this->context_->engine_;
-    int nbBindings = engine->getNbBindings();
+    int nbBindings = num_bindings();
 
     binding_name_to_index_.clear();
     for (int i = 0; i < nbBindings; ++i) {
-      const char *bindingName = engine->getBindingName(i);
+      const char *bindingName = engine->getIOTensorName(i);
       binding_name_to_index_[bindingName] = i;
     }
   }
@@ -191,27 +191,35 @@ class EngineImplement : public Engine {
     return iter->second;
   }
 
+  virtual std::string name(int ibinding) override {
+    return this->context_->engine_->getIOTensorName(ibinding);
+  }
+
   virtual bool forward(const std::vector<const void *> &bindings, void *stream, void *input_consum_event) override {
-    return this->context_->context_->enqueueV2((void **)bindings.data(), (cudaStream_t)stream, (cudaEvent_t *)input_consum_event);
+    // return this->context_->context_->enqueueV2((void **)bindings.data(), (cudaStream_t)stream, (cudaEvent_t *)input_consum_event);
+    for (int i = 0; i < bindings.size(); ++i) {
+      this->context_->context_->setTensorAddress(name(i).c_str(), (void *)bindings.at(i));
+    }
+    return this->context_->context_->enqueueV3((cudaStream_t)stream);
   }
 
   virtual std::vector<int> run_dims(const std::string &name) override { return run_dims(index(name)); }
 
   virtual std::vector<int> run_dims(int ibinding) override {
-    auto dim = this->context_->context_->getBindingDimensions(ibinding);
+    auto dim = this->context_->context_->getTensorShape(name(ibinding).c_str());
     return std::vector<int>(dim.d, dim.d + dim.nbDims);
   }
 
   virtual std::vector<int> static_dims(const std::string &name) override { return static_dims(index(name)); }
 
   virtual std::vector<int> static_dims(int ibinding) override {
-    auto dim = this->context_->engine_->getBindingDimensions(ibinding);
+    auto dim = this->context_->engine_->getTensorShape(name(ibinding).c_str());
     return std::vector<int>(dim.d, dim.d + dim.nbDims);
   }
 
-  virtual int num_bindings() override { return this->context_->engine_->getNbBindings(); }
+  virtual int num_bindings() override { return this->context_->engine_->getNbIOTensors(); }
 
-  virtual bool is_input(int ibinding) override { return this->context_->engine_->bindingIsInput(ibinding); }
+  virtual bool is_input(int ibinding) override { return this->context_->engine_->getTensorIOMode(name(ibinding).c_str()) == nvinfer1::TensorIOMode::kINPUT; }
 
   virtual bool set_run_dims(const std::string &name, const std::vector<int> &dims) override {
     return this->set_run_dims(index(name), dims);
@@ -221,26 +229,26 @@ class EngineImplement : public Engine {
     nvinfer1::Dims d;
     memcpy(d.d, dims.data(), sizeof(int) * dims.size());
     d.nbDims = dims.size();
-    return this->context_->context_->setBindingDimensions(ibinding, d);
+    return this->context_->context_->setInputShape(name(ibinding).c_str(), d);
   }
 
   virtual int numel(const std::string &name) override { return numel(index(name)); }
 
   virtual int numel(int ibinding) override {
-    auto dim = this->context_->context_->getBindingDimensions(ibinding);
+    auto dim = this->context_->context_->getTensorShape(name(ibinding).c_str());
     return std::accumulate(dim.d, dim.d + dim.nbDims, 1, std::multiplies<int>());
   }
 
   virtual DType dtype(const std::string &name) override { return dtype(index(name)); }
 
-  virtual DType dtype(int ibinding) override { return (DType)this->context_->engine_->getBindingDataType(ibinding); }
+  virtual DType dtype(int ibinding) override { return (DType)this->context_->engine_->getTensorDataType(name(ibinding).c_str()); }
 
   virtual bool has_dynamic_dim() override {
     // check if any input or output bindings have dynamic shapes
     // code from ChatGPT
-    int numBindings = this->context_->engine_->getNbBindings();
+    int numBindings = num_bindings();
     for (int i = 0; i < numBindings; ++i) {
-      nvinfer1::Dims dims = this->context_->engine_->getBindingDimensions(i);
+      nvinfer1::Dims dims = this->context_->engine_->getTensorShape(name(i).c_str());
       for (int j = 0; j < dims.nbDims; ++j) {
         if (dims.d[j] == -1) return true;
       }
@@ -255,8 +263,8 @@ class EngineImplement : public Engine {
     int num_input = 0;
     int num_output = 0;
     auto engine = this->context_->engine_;
-    for (int i = 0; i < engine->getNbBindings(); ++i) {
-      if (engine->bindingIsInput(i))
+    for (int i = 0; i < num_bindings(); ++i) {
+      if (is_input(i))
         num_input++;
       else
         num_output++;
@@ -264,17 +272,17 @@ class EngineImplement : public Engine {
 
     printf("Inputs: %d\n", num_input);
     for (int i = 0; i < num_input; ++i) {
-      auto name = engine->getBindingName(i);
-      auto dim = engine->getBindingDimensions(i);
-      auto dtype = engine->getBindingDataType(i);
+      auto name = engine->getIOTensorName(i);
+      auto dim = engine->getTensorShape(name);
+      auto dtype = engine->getTensorDataType(name);
       printf("\t%d.%s : {%s} [%s]\n", i, name, format_shape(dim).c_str(), data_type_string(dtype));
     }
 
     printf("Outputs: %d\n", num_output);
     for (int i = 0; i < num_output; ++i) {
-      auto name = engine->getBindingName(i + num_input);
-      auto dim = engine->getBindingDimensions(i + num_input);
-      auto dtype = engine->getBindingDataType(i + num_input);
+      auto name = engine->getIOTensorName(i + num_input);
+      auto dim = engine->getTensorShape(name);
+      auto dtype = engine->getTensorDataType(name);
       printf("\t%d.%s : {%s} [%s]\n", i, name, format_shape(dim).c_str(), data_type_string(dtype));
     }
     printf("------------------------------------------------------\n");
